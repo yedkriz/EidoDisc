@@ -1,0 +1,16 @@
+[package]
+name = "mkvdisc-mpv"
+version = "0.2.0"
+edition = "2021"
+
+[lib]
+name = "mkvdisc_mpv"
+crate-type = ["cdylib"]
+
+[dependencies]
+mkvdisc = { path = "../mkvdisc" }
+serde_json = "1.0"
+image = "0.25"
+
+[build-dependencies]
+bindgen = "0.71"

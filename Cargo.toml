@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "mkvdisc",
+    "mkvdisc-mpv"
+]
+resolver = "2"
+exclude = ["mkvdisc-studio"]

@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install libclang
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libclang-dev
+      - name: Test manifest core
+        run: cargo test --release -p mkvdisc
+      - name: Test mpv plugin
+        run: cargo test --release -p mkvdisc-mpv
+
+  authoring:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build manifest validator
+        run: cargo build --release -p mkvdisc
+      - name: Install authoring dependencies
+        run: python -m pip install -r mkvdisc-authoring/requirements.txt
+      - name: Test authoring app and exports
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          Push-Location mkvdisc-authoring
+          python -m unittest discover -s tests -p test_authoring.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location

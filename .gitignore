@@ -1,0 +1,46 @@
+# Rust build output
+/target/
+**/target/
+/mkvdisc-studio/
+/mkvdisc/Cargo.lock
+
+# Python virtual environments and generated files
+.venv/
+**/.venv/
+__pycache__/
+*.py[cod]
+
+# Authoring exports and local media/test material
+/mkvdisc-authoring/out-test/
+*.mkv
+*.mp4
+*.mov
+*.webm
+*.avi
+*.m4v
+/mkvdisc.json
+/vlc-log
+/milestone.txt
+/build_test_disc.py
+/launch-studio.ps1
+
+# Local MKVToolNix executables
+/mkvmerge.exe
+/mkvextract.exe
+/mkvpropedit.exe
+
+# Local mpv SDK binaries; retain API headers used by the build
+/mpv-sdk/**/*.dll
+/mpv-sdk/**/*.lib
+/mpv-sdk/**/*.a
+/mpv-sdk/**/*.exp
+
+# Native build artifacts
+*.dll
+*.so
+*.dylib
+*.lib
+*.a
+*.exp
+*.def
+*.pdb
