@@ -5,6 +5,31 @@ PySide6 authoring app. Menus are authored on a 1920 x 1080 canvas. EidoDisc
 does not generate button artwork: import your own image assets for each button
 state.
 
+## Basic concepts
+
+- **Menu**: one screen/page in the interactive disc, such as Main Menu,
+  Audio Setup, or Extras. Menus have their own backgrounds and buttons.
+- **Button**: a selectable rectangle on a menu. It has a user-visible label,
+  a unique UID for links, artwork, and an action.
+- **Title**: a playable video entry. A title points to a source MKV, a video
+  track within that file, a time range, and the menu to return to afterward.
+- **Track**: one stream inside a media file. A Matroska file may contain
+  several video, audio, or subtitle tracks. A track ID is not a menu UID or
+  a state-variable value.
+- **State variable**: a named, temporary key/value in the menu runtime. It
+  remembers a choice such as `audio_lang = en` so a button can show its
+  Active artwork. Variable names and values are chosen by the author; names
+  such as `audio_lang` are examples, not built-in keywords.
+- **Navigation**: the directional links between buttons, used by arrow keys
+  or a remote control. Navigation changes focus; the button action runs only
+  when the focused button is selected.
+
+The terms `en`, `fr`, `off`, `on`, `audio_lang`, and `subtitle_lang` have no
+special meaning to EidoDisc. They are ordinary strings. You could instead use
+keys such as `chosen_audio` and values such as `english`; the important part
+is to use the exact same spelling in the initial value, button action, and
+active condition.
+
 ## 1. Start a project and add menus
 
 1. Launch the authoring app. Use **New Project** for a blank project or
@@ -22,16 +47,62 @@ state.
 
 1. Use **Import Media…** and select the MKV title sources.
 2. Open the **Titles** tab in the bottom dock. Each title has a UID, display
-   name, source file, video track ID, start/end trim bounds in nanoseconds,
+   name, source file, video track ID, start/end positions in nanoseconds,
    and a **Menu return** target.
-3. Change the default one-second end bound to the desired end time. The end
-   bound is in nanoseconds: one second is `1000000000`.
+3. Set the desired **Start (ns)** position. One second is `1000000000`
+   nanoseconds. The **End (ns)** field is saved in the manifest, but the
+   current mpv runtime does not yet stop playback at that end position; title
+   playback continues to the end of the source file.
 4. Choose a valid menu UID for each title's menu-return destination.
 
-For embedded output, leave each title's source file in the project: the
-exporter needs it to multiplex the picture and map its source track into the
-combined MKV. Track IDs are identified from source files and remapped for the
-final output. Directory output copies the title files beside the manifest.
+The **Video track ID** identifies the video stream to use for this title; it
+is not the Matroska track UID and not the title UID. The app probes imported
+files and normally fills in the first video track ID. If the file contains
+multiple video tracks, verify or change the ID to the intended video stream.
+The source MKV must remain available when exporting.
+
+For embedded output, the exporter multiplexes the title source MKVs and maps
+each title's source video track to the correct track ID in the combined file.
+For directory output, it copies the title files beside the manifest and the
+runtime opens the selected title file.
+
+### Audio and subtitle tracks: current support
+
+Audio and subtitle tracks are streams inside the title's MKV, separate from
+its video track. At present, the authoring app and mpv plugin do **not**
+provide a menu action that switches the playing title's audio or subtitle
+stream. The manifest schema has fields reserved for audio/subtitle track IDs,
+but entering a state value such as `audio_lang = en` only remembers a menu
+choice and can change button artwork; it does not select an audio stream.
+Likewise, a `subtitle_lang` variable does not turn subtitles on or off.
+
+You can still author and preview language-selection screens as navigation and
+visual design, or use separate title videos that already contain the desired
+mix. Do not promise users that such buttons change audio/subtitle playback
+until runtime track-switching support is added.
+
+### Finding track IDs in an MKV
+
+When a source contains multiple video tracks, use the **Track ID** shown by
+MKVToolNix for that source file. Do not use the long Matroska track UID, track
+number from another file, or an audio/subtitle ID in the title's **Video track
+ID** cell.
+
+1. Open **MKVToolNix GUI** and add the title source MKV to the Multiplexer tab.
+2. In the track list, check the **ID**, **Type**, **Language**, **Name**, and
+   **Default track** columns. Find the video row you intend to play and note
+   its ID.
+3. In the authoring app's **Titles** tab, put that ID in **Video track ID** for
+   the title. IDs are local to each source file; ID `0` in one file does not
+   imply the same content as ID `0` in another.
+4. For embedded output, the exporter maps this source ID to the corresponding
+   track in the combined MKV. Do not manually replace the source ID with an
+   ID copied from an older export.
+
+Language and track name are descriptive Matroska metadata. For example, an
+audio track may have language `eng` and name `Commentary`, but those labels do
+not define the menu key/value `audio_lang = en`. Track metadata and menu state
+are separate concepts.
 
 ## 3. Add a button and its artwork
 
@@ -67,7 +138,78 @@ Choose one action in the inspector:
 - **Set State Variable**: enter a variable key and value. For example, set
   `audio_lang` to `en` when the user chooses English audio.
 
-To keep a selected option visibly selected:
+### How state variables work
+
+Think of a state variable as a small note the menu keeps while the disc is
+playing:
+
+```text
+key          value
+audio_lang   en
+```
+
+Here, `audio_lang` is the note's name and `en` is the remembered value. The
+author creates both. The key is not detected from the media file; `en` is not
+automatically looked up as an audio track; and changing the note does not
+change the video or audio stream.
+
+The **State** tab on the left edits the project's initial key/value table.
+Add a row using the blank last row. These values are copied into the runtime
+when the disc opens. They are not written back to the manifest during
+playback, and changing a button updates the runtime value for the current
+session.
+
+### Example: an English/Français choice screen
+
+This example builds the menu behavior and selected-state visuals. It does
+**not** switch the title's actual audio stream; audio switching is not
+implemented yet.
+
+1. In the **State** tab, add `audio_lang` as the key and `off` as its initial
+   value. The value `off` means that neither language choice has been made.
+2. Add a menu named **Audio Setup**. Add a **Jump Menu** button to the main
+   menu that opens it.
+3. Add an **English** button to Audio Setup. Give it a unique UID such as
+   `audio-english`, choose **Set State Variable**, and enter:
+   - Set variable key: `audio_lang`
+   - Set variable value: `en`
+   - Active condition key: `audio_lang`
+   - Active condition value: `en`
+4. Assign the English button its own Idle and Focused images, then an Active
+   transparent overlay (for example, a check mark or selected border).
+5. Add a **Français** button in the same way, but use `fr` for its set value
+   and active-condition value. The shared key stays `audio_lang`.
+6. Add a **Back** button with **Jump Menu** to the main menu.
+7. Save, export, and play. Select English: the runtime value becomes
+   `audio_lang = en`, and its Active overlay appears. Move focus to Français:
+   English stays active while Français shows its Focused base art. Select
+   Français: the value becomes `fr`, so the English overlay turns off and the
+   Français overlay turns on.
+
+This illustrates three separate concepts: **Focus** follows the current
+navigation position, **State** remembers a choice, and **Active artwork**
+indicates that the remembered value matches the button's condition.
+
+### Other useful state examples
+
+State keys and values are free-form strings. For example:
+
+| Purpose | Key | Example values |
+|---|---|---|
+| Remember a language choice | `audio_lang` | `off`, `en`, `fr` |
+| Remember a subtitle-menu choice | `subtitle_lang` | `off`, `en`, `fr` |
+| Remember a presentation choice | `edition` | `theatrical`, `extended` |
+| Remember a menu preference | `screen_mode` | `widescreen`, `standard` |
+
+These are only remembered menu values. In the current runtime they do not
+select audio, subtitle, edition, or display tracks. An edition choice can
+launch a different title only when its buttons use **Play Title** actions
+that target distinct title entries.
+
+### Make the selected choice visible
+
+For every option button, use the same key and value in its **Set State
+Variable** action and its **Active condition**. For example:
 
 1. Add the variable and initial value in the left **State** tab, such as
    `audio_lang = off`.
@@ -77,16 +219,17 @@ To keep a selected option visibly selected:
 4. Add a separate button for other values (for example `fr`) with a matching
    active condition.
 
-State is currently represented as string key/value pairs. A set-variable
-button changes the runtime state; it does not by itself switch the encoded
-audio stream. Actual audio/subtitle track switching is a separate playback
-feature.
+The comparison is exact, including spelling and capitalization. If an
+initial-state row has `audio_lang = en` but a button checks for `English`, its
+Active overlay will not appear.
 
 ## 5. Design directional navigation
 
 Every button can define **Navigate up**, **Navigate down**, **Navigate left**,
 and **Navigate right** links. Each dropdown targets another button in the
-project; the menu runtime uses arrow keys to move focus.
+project; the menu runtime uses arrow keys to move focus. The inspector may
+show buttons from the whole project, but navigation should target buttons on
+the current menu.
 
 Recommended workflow:
 

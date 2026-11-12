@@ -17,6 +17,21 @@ used by `first_play`, actions, navigation, and title return links.
 | `menus` | Menu pages containing canvas, background, and buttons. |
 | `default_audio_uid`, `default_subtitle_uid` | Optional Matroska track identifiers. |
 
+## What track and state fields do today
+
+The mpv runtime currently uses `video_track_uid` to choose a title's video
+stream. The manifest also has `audio_track_uids`, `subtitle_track_uids`,
+`default_audio_uid`, and `default_subtitle_uid` fields, but the current
+authoring UI/runtime does not use them to change audio or subtitle playback.
+They are reserved schema fields, not working language-switch controls yet.
+
+`initial_state_variables` and a button's `set_var_key` / `set_var_value` are
+menu logic, not Matroska track references. For example,
+`"audio_lang": "en"` means only that the menu remembers the string value `en`
+for a variable named `audio_lang`. It does not inspect the media, select an
+English audio track, or turn subtitles on or off. The names and values are
+chosen by the author and compared as exact strings for active artwork.
+
 ## Title
 
 ```json
@@ -36,6 +51,15 @@ to the source file in a project and directory export. An embedded export
 rewrites the manifest with the corresponding output-container track ID and
 omits the workstation source path. Bounds are nanoseconds. `menu_return` is a
 menu UID.
+
+The video track ID is local to the source MKV before export. Use MKVToolNix
+GUI's track list to distinguish a video track from audio and subtitle tracks.
+Do not substitute the Matroska track UID, which is a separate, usually much
+larger number.
+
+The runtime seeks to `start_ns` when title playback begins. Although
+`end_ns` is stored in the manifest, the current mpv plugin does not yet stop
+at that bound; playback continues until the source file ends.
 
 ## Menu and button
 
@@ -103,9 +127,11 @@ variable equals that value. Example:
 ## Navigation
 
 Each direction in `navigation` is either null or the UID of another button.
-Targets are project-wide in the current authoring UI. For predictable remote
-control, explicitly set reciprocal links where appropriate: if A points right
-to B, set B's left target to A.
+The authoring inspector lists buttons from the project, but the current mpv
+runtime follows directional navigation only to a button in the current menu.
+Use same-menu targets. For predictable remote control, explicitly set
+reciprocal links where appropriate: if A points right to B, set B's left
+target to A.
 
 ## v0.2 complete small example
 
