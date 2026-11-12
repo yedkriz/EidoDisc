@@ -57,8 +57,16 @@ exported Matroska:
 
 ```powershell
 cargo build --release -p mkvdisc-mpv
-mpv --script="target\release\mkvdisc_mpv.dll" "path\to\disc.mkv"
+$mpv = (Get-Command mpv.exe -ErrorAction SilentlyContinue).Source
+if (-not $mpv) {
+    $mpv = Read-Host "Enter the full path to mpv.exe"
+}
+& $mpv --script="target\release\mkvdisc_mpv.dll" "path\to\disc.mkv"
 ```
+
+If PowerShell says `mpv` is not recognized, enter the full path to `mpv.exe`
+when prompted. Use just one `--script` option and replace the example media
+path with the exported MKV's path.
 
 The plugin reads the embedded manifest and attachments, then starts the
 `first_play` menu. Its C-plugin entry point must remain active until mpv shuts

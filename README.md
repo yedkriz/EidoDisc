@@ -77,13 +77,20 @@ Build the plugin and load it with the export:
 
 ```powershell
 cargo build --release -p mkvdisc-mpv
-mpv --script="target\release\mkvdisc_mpv.dll" "path\to\disc.mkv"
+$mpv = (Get-Command mpv.exe -ErrorAction SilentlyContinue).Source
+if (-not $mpv) {
+    $mpv = Read-Host "Enter the full path to mpv.exe"
+}
+& $mpv --script="target\release\mkvdisc_mpv.dll" "path\to\disc.mkv"
 ```
 
 An mpv C plugin is not an ordinary media codec plugin: mpv loads it through
 its script-loading option. To avoid supplying the option for every launch,
 users can configure mpv to load the DLL by default. See the mpv section of the
-[authoring guide](docs/authoring-guide.md).
+[authoring guide](docs/authoring-guide.md). If PowerShell says `mpv` is not
+recognized, mpv is not on `PATH`; enter the full path to `mpv.exe` at the
+prompt. Keep only one `--script` option and replace the example media path
+with the exported MKV's path.
 
 ## License
 

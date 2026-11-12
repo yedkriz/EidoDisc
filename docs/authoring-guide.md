@@ -136,7 +136,11 @@ Build the plugin from the repository root and pass it to mpv:
 
 ```powershell
 cargo build --release -p mkvdisc-mpv
-mpv --script="target\release\mkvdisc_mpv.dll" "path\to\disc.mkv"
+$mpv = (Get-Command mpv.exe -ErrorAction SilentlyContinue).Source
+if (-not $mpv) {
+    $mpv = Read-Host "Enter the full path to mpv.exe"
+}
+& $mpv --script="target\release\mkvdisc_mpv.dll" "path\to\disc.mkv"
 ```
 
 The plugin reads an embedded manifest and its attachments, or the sidecar
@@ -144,6 +148,10 @@ manifest and media in a directory package. In a menu, click a button or use
 the arrow keys and Enter. During title playback, **Ctrl+m** returns to the
 configured menu-return target. The plugin depends on MKVToolNix's
 `mkvmerge.exe` and `mkvextract.exe` being available.
+
+If PowerShell reports that `mpv` is not recognized, mpv is not on `PATH`;
+enter the full path to `mpv.exe` when prompted. Use only one `--script`
+option and replace the example media path with the exported MKV's actual path.
 
 To load the plugin automatically on each mpv launch, add a script entry in
 mpv's `mpv.conf`:
