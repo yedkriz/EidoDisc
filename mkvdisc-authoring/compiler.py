@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -12,8 +13,13 @@ from PySide6.QtCore import QObject, QProcess, QThread, Signal
 from models import Manifest
 
 
+_MKVMERGE_PROGRESS = re.compile(r"^#GUI#progress\s+(\d+)\s*$")
+
+
 class MultiplexJob(QObject):
     output = Signal(str)
+    progress = Signal(int)
+    phase = Signal(str)
     finished = Signal(bool, str)
 
     def __init__(
@@ -46,7 +52,9 @@ class MultiplexJob(QObject):
         if self._process.state() != QProcess.ProcessState.NotRunning:
             raise RuntimeError("The multiplex process is already running.")
         try:
+            self.phase.emit("Preparing export…")
             self._prepare()
+            self.phase.emit("Multiplexing")
             self._process.start(self._mkvmerge_path, self._arguments())
         except (OSError, ValueError, RuntimeError) as error:
             self._cleanup()
@@ -139,7 +147,7 @@ class MultiplexJob(QObject):
         return copied
 
     def _arguments(self) -> list[str]:
-        args = ["--output", str(self._build_path)]
+        args = ["--gui-mode", "--output", str(self._build_path)]
         args.extend(str(path) for path in self._source_files)
         for attachment in self._attachments:
             args.extend(["--attachment-name", attachment.name])
@@ -169,16 +177,23 @@ class MultiplexJob(QObject):
         remainder = ""
         for line in lines:
             if line.endswith(("\n", "\r")):
-                self.output.emit(line.rstrip("\r\n"))
+                self._handle_process_line(line.rstrip("\r\n"))
             else:
                 remainder = line
         setattr(self, attribute, remainder)
+
+    def _handle_process_line(self, line: str) -> None:
+        progress_match = _MKVMERGE_PROGRESS.match(line)
+        if progress_match:
+            self.progress.emit(max(0, min(100, int(progress_match.group(1)))))
+        else:
+            self.output.emit(line)
 
     def _flush_pending(self) -> None:
         for attribute in ("_stdout_pending", "_stderr_pending"):
             pending = getattr(self, attribute)
             if pending:
-                self.output.emit(pending.rstrip("\r\n"))
+                self._handle_process_line(pending.rstrip("\r\n"))
                 setattr(self, attribute, "")
 
     def _process_finished(self, exit_code: int, exit_status: QProcess.ExitStatus) -> None:
@@ -212,6 +227,7 @@ class MultiplexJob(QObject):
             return
         if success and self._manifest.source_mode == "embedded":
             try:
+                self.phase.emit("Preparing title track mappings…")
                 self._prepare_embedded_manifest()
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
                 message = str(error)
@@ -222,6 +238,7 @@ class MultiplexJob(QObject):
                 self.finished.emit(False, message)
                 return
             self.output.emit("Adding the validated manifest and title track mapping.")
+            self.phase.emit("Finishing export…")
             self._finalizing = True
             self._process.start(
                 self._mkvpropedit_path(),
@@ -281,9 +298,10 @@ class MultiplexJob(QObject):
             source_tracks[source_path] = self._identify_tracks(source_path)
         output_tracks = self._identify_tracks(self._build_path)
 
-        output_video_ids_by_uid: dict[int, list[int]] = {}
+        output_track_ids_by_type_uid: dict[tuple[str, int], list[int]] = {}
         for track in output_tracks:
-            if track.get("type") != "video":
+            track_type = track.get("type")
+            if track_type not in {"video", "audio", "subtitles"}:
                 continue
             properties = track.get("properties")
             if not isinstance(properties, dict):
@@ -291,7 +309,29 @@ class MultiplexJob(QObject):
             track_uid = properties.get("uid")
             track_id = track.get("id")
             if isinstance(track_uid, int) and isinstance(track_id, int):
-                output_video_ids_by_uid.setdefault(track_uid, []).append(track_id)
+                output_track_ids_by_type_uid.setdefault(
+                    (track_type, track_uid), []
+                ).append(track_id)
+
+        def map_output_track(source_track: dict[str, object], title_uid: str) -> int:
+            track_type = source_track.get("type")
+            properties = source_track.get("properties")
+            source_uid = (
+                properties.get("uid") if isinstance(properties, dict) else None
+            )
+            if track_type not in {"video", "audio", "subtitles"} or not isinstance(
+                source_uid, int
+            ):
+                raise ValueError(
+                    f"Could not identify a source track for title '{title_uid}'."
+                )
+            output_ids = output_track_ids_by_type_uid.get((track_type, source_uid), [])
+            if len(output_ids) != 1:
+                raise ValueError(
+                    f"Could not uniquely map a {track_type} track for title "
+                    f"'{title_uid}' to the multiplexed MKV."
+                )
+            return output_ids[0]
 
         for title_data, title in zip(manifest_data["titles"], self._manifest.titles):
             source_path = Path(title.video_track_file or "").expanduser().resolve()
@@ -325,19 +365,45 @@ class MultiplexJob(QObject):
                     f"Title '{title.uid}' references a video track that does not "
                     "exist in its source MKV."
                 )
-            properties = source_track.get("properties")
-            source_uid = properties.get("uid") if isinstance(properties, dict) else None
-            if not isinstance(source_uid, int):
-                raise ValueError(
-                    f"Could not identify the Matroska video track for title '{title.uid}'."
+            title_data["video_track_uid"] = map_output_track(source_track, title.uid)
+
+            audio_tracks = [track for track in tracks if track.get("type") == "audio"]
+            subtitle_tracks = [
+                track for track in tracks if track.get("type") == "subtitles"
+            ]
+            audio_tracks.sort(
+                key=lambda track: not (
+                    isinstance(track.get("properties"), dict)
+                    and track["properties"].get("default_track") is True
                 )
-            output_ids = output_video_ids_by_uid.get(source_uid, [])
-            if len(output_ids) != 1:
-                raise ValueError(
-                    f"Could not uniquely map title '{title.uid}' to its video track "
-                    "in the multiplexed MKV."
+            )
+            subtitle_tracks.sort(
+                key=lambda track: not (
+                    isinstance(track.get("properties"), dict)
+                    and track["properties"].get("default_track") is True
                 )
-            title_data["video_track_uid"] = output_ids[0]
+            )
+            mapped_audio_tracks = [
+                map_output_track(track, title.uid) for track in audio_tracks
+            ]
+            mapped_subtitle_tracks = [
+                map_output_track(track, title.uid) for track in subtitle_tracks
+            ]
+            title_data["audio_track_uids"] = mapped_audio_tracks
+            title_data["subtitle_track_uids"] = mapped_subtitle_tracks
+            title_data["default_audio_track_uid"] = (
+                mapped_audio_tracks[0] if mapped_audio_tracks else None
+            )
+            default_subtitle = next(
+                (
+                    map_output_track(track, title.uid)
+                    for track in subtitle_tracks
+                    if isinstance(track.get("properties"), dict)
+                    and track["properties"].get("default_track") is True
+                ),
+                None,
+            )
+            title_data["default_subtitle_track_uid"] = default_subtitle
 
         manifest_json = json.dumps(manifest_data, indent=2, ensure_ascii=False)
         self._validator.validate(manifest_json)
@@ -400,6 +466,8 @@ class MultiplexJob(QObject):
 
 class DirectoryExportJob(QThread):
     output = Signal(str)
+    progress = Signal(int)
+    phase = Signal(str)
     completed = Signal(bool, str)
 
     def __init__(
@@ -460,10 +528,25 @@ class DirectoryExportJob(QThread):
             prefix=".mkvdisc-export-", dir=self._output_directory
         ) as staging:
             stage = Path(staging)
+            total_bytes = sum(source.stat().st_size for _, source in files.values())
+            copied_bytes = 0
+            last_progress = -1
+            self.phase.emit("Copying directory package")
+            self.progress.emit(0)
             for index, (name, source) in enumerate(files.values(), start=1):
                 destination = stage / name
                 self.output.emit(f"Copying {source.name} ({index}/{len(files)})")
-                shutil.copy2(source, destination)
+                with source.open("rb") as input_file, destination.open("wb") as output_file:
+                    while chunk := input_file.read(1024 * 1024):
+                        output_file.write(chunk)
+                        copied_bytes += len(chunk)
+                        if total_bytes:
+                            progress = min(95, int(copied_bytes * 95 / total_bytes))
+                            if progress != last_progress:
+                                self.progress.emit(progress)
+                                last_progress = progress
+                shutil.copystat(source, destination)
+            self.phase.emit("Finishing directory export…")
             (stage / "mkvdisc.json").write_text(manifest_json, encoding="utf-8")
             for name, _ in files.values():
                 (stage / name).replace(self._output_directory / name)

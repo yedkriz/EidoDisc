@@ -24,6 +24,8 @@ class Title:
     video_track_file: str | None = None
     audio_track_uids: list[int] | None = None
     subtitle_track_uids: list[int] | None = None
+    default_audio_track_uid: int | None = None
+    default_subtitle_track_uid: int | None = None
 
 
 @dataclass

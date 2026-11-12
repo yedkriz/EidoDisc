@@ -24,6 +24,10 @@ pub struct Title {
     pub audio_track_uids: Option<Vec<u32>>,
     #[serde(default)]
     pub subtitle_track_uids: Option<Vec<u32>>,
+    #[serde(default)]
+    pub default_audio_track_uid: Option<u32>,
+    #[serde(default)]
+    pub default_subtitle_track_uid: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -225,6 +226,15 @@ class AuthoringWindow(QMainWindow):
         self.build_button = QPushButton("Validate & Export")
         form.addWidget(self.build_button)
         layout.addLayout(form)
+        progress_row = QHBoxLayout()
+        self.export_progress_label = QLabel("Ready")
+        self.export_progress_label.setMinimumWidth(190)
+        progress_row.addWidget(self.export_progress_label)
+        self.export_progress = QProgressBar()
+        self.export_progress.setRange(0, 100)
+        self.export_progress.setValue(0)
+        progress_row.addWidget(self.export_progress, 1)
+        layout.addLayout(progress_row)
         self.export_status = QLabel(
             "Directory exports include the manifest, title files, and referenced assets."
         )
@@ -1081,6 +1091,7 @@ class AuthoringWindow(QMainWindow):
             self._start_build(output_path)
 
     def _start_directory_export(self, output_directory: Path) -> None:
+        self._begin_export_progress("Validating directory package…")
         try:
             self._repair_legacy_video_track_ids()
             validator = self._get_validator()
@@ -1092,6 +1103,7 @@ class AuthoringWindow(QMainWindow):
             )
         except (OSError, ValueError, ManifestValidationError, AttributeError) as error:
             self._log(f"Directory export validation failed: {error}")
+            self._finish_export_progress(False)
             QMessageBox.warning(self, "Directory export failed", str(error))
             return
 
@@ -1102,6 +1114,8 @@ class AuthoringWindow(QMainWindow):
             self,
         )
         self._directory_job.output.connect(self._log)
+        self._directory_job.phase.connect(self._export_phase_changed)
+        self._directory_job.progress.connect(self._directory_progress_changed)
         self._directory_job.completed.connect(self._directory_export_finished)
         self.build_button.setEnabled(False)
         self.export_mode_combo.setEnabled(False)
@@ -1110,6 +1124,7 @@ class AuthoringWindow(QMainWindow):
         self._directory_job.start()
 
     def _start_build(self, output_path: Path) -> None:
+        self._begin_export_progress("Validating manifest…")
         try:
             self._repair_legacy_video_track_ids()
             validator = self._get_validator()
@@ -1121,6 +1136,7 @@ class AuthoringWindow(QMainWindow):
             )
         except (OSError, ValueError, ManifestValidationError, AttributeError) as error:
             self._log(f"Validation failed: {error}")
+            self._finish_export_progress(False)
             QMessageBox.warning(self, "Validation failed", str(error))
             return
 
@@ -1134,6 +1150,8 @@ class AuthoringWindow(QMainWindow):
             self,
         )
         self._job.output.connect(self._log)
+        self._job.phase.connect(self._export_phase_changed)
+        self._job.progress.connect(self._embedded_progress_changed)
         self._job.finished.connect(self._build_finished)
         self.build_button.setEnabled(False)
         self.export_mode_combo.setEnabled(False)
@@ -1178,6 +1196,7 @@ class AuthoringWindow(QMainWindow):
 
     def _build_finished(self, success: bool, message: str) -> None:
         self._log(message)
+        self._finish_export_progress(success)
         self.build_button.setEnabled(True)
         self.export_mode_combo.setEnabled(True)
         self.browse_export_button.setEnabled(True)
@@ -1189,6 +1208,7 @@ class AuthoringWindow(QMainWindow):
 
     def _directory_export_finished(self, success: bool, message: str) -> None:
         self._log(message)
+        self._finish_export_progress(success)
         self.build_button.setEnabled(True)
         self.export_mode_combo.setEnabled(True)
         self.browse_export_button.setEnabled(True)
@@ -1199,6 +1219,35 @@ class AuthoringWindow(QMainWindow):
             self.statusBar().showMessage(message, 10000)
         else:
             QMessageBox.critical(self, "Directory export failed", message)
+
+    def _begin_export_progress(self, phase: str) -> None:
+        self.export_progress.setRange(0, 0)
+        self.export_progress_label.setText(phase)
+
+    def _export_phase_changed(self, phase: str) -> None:
+        self.export_progress_label.setText(phase)
+        if phase in {"Multiplexing", "Copying directory package"}:
+            self.export_progress.setRange(0, 100)
+            self.export_progress.setValue(0)
+        else:
+            self.export_progress.setRange(0, 0)
+
+    def _embedded_progress_changed(self, percent: int) -> None:
+        self.export_progress.setRange(0, 100)
+        self.export_progress.setValue(min(95, int(percent * 0.95)))
+        self.export_progress_label.setText(f"Multiplexing: {percent}%")
+
+    def _directory_progress_changed(self, percent: int) -> None:
+        self.export_progress.setRange(0, 100)
+        self.export_progress.setValue(percent)
+        self.export_progress_label.setText(f"Copying files: {percent}%")
+
+    def _finish_export_progress(self, success: bool) -> None:
+        self.export_progress.setRange(0, 100)
+        self.export_progress.setValue(100 if success else 0)
+        self.export_progress_label.setText(
+            "Export complete" if success else "Export failed"
+        )
 
     def _log(self, message: str) -> None:
         self.log.appendPlainText(message)

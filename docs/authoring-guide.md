@@ -66,41 +66,32 @@ each title's source video track to the correct track ID in the combined file.
 For directory output, it copies the title files beside the manifest and the
 runtime opens the selected title file.
 
-### Audio and subtitle tracks: current support
+### Audio and subtitle tracks
 
-Audio and subtitle tracks are streams inside the title's MKV, separate from
-its video track. At present, the authoring app and mpv plugin do **not**
-provide a menu action that switches the playing title's audio or subtitle
-stream. Embedded export multiplexes the tracks from its source files into the
-output, but the runtime only maps/selects the title's video track. It does not
-map that title to its corresponding audio or subtitle tracks.
+Embedded export maps each title source's audio and subtitle tracks to their
+track IDs in the combined MKV. When a title starts, the mpv plugin selects
+that source's default audio track (or its first audio track if no default is
+marked) and its default subtitle track, if one is marked. Directory playback
+continues to use the normal track selection of the individual title file.
 
-You do **not** need to fill in `audio_track_uids`, `subtitle_track_uids`,
-`default_audio_uid`, or `default_subtitle_uid`; the current authoring app
-doesn't expose these as working per-title playback mappings. In particular,
-do not assume that video track ID 1 should use audio track ID 1, or that
-video track ID 0 should use audio track ID 0. IDs are local to each source
-file and each track type, and they do not express which audio belongs to
-which video.
+The plugin cannot remove other titles' streams from mpv's native track list:
+mpv's track list is player-owned and not filterable by a C plugin. The native
+track menu may therefore still show tracks from other titles, even though the
+plugin selects the active title's default streams. Per-title audio/subtitle
+switching from MKV-DISC menu buttons is not implemented yet.
 
-As a result, when an embedded file contains multiple title sources, the
-runtime cannot currently guarantee that each title plays its own original
-audio or subtitle stream. mpv uses its normal track-selection behavior for
-the combined file. A state value such as `audio_lang = en` only remembers a
-menu choice and can change button artwork; it does not select an audio stream.
-Likewise, a `subtitle_lang` variable does not turn subtitles on or off.
+Do not assume that video track ID 1 should use audio track ID 1, or that video
+track ID 0 should use audio track ID 0. IDs are local to each source file and
+track type. Embedded export performs the source-to-output mapping; authors
+should set the intended default audio/subtitle flags on each source file in
+MKVToolNix. The resulting track IDs are recorded in
+`audio_track_uids` / `subtitle_track_uids`, with default selections in
+`default_audio_track_uid` / `default_subtitle_track_uid`.
 
-You can still author and preview language-selection screens as navigation and
-visual design, but they are visual/state-only today. For reliable audio in a
-directory package, keep each title in its own source MKV with its intended
-default audio/subtitle tracks set in MKVToolNix. This is not a workaround for
-per-title track selection in an embedded file.
-
-Proper embedded support will need to record the mapping for each title from
-source audio/subtitle track IDs to output-container track IDs, then have the
-player select those mapped tracks when starting that title. A real language
-selection menu will additionally need playback actions that switch among the
-mapped audio/subtitle alternatives; reactive state alone is not enough.
+A state value such as `audio_lang = en` only remembers a menu choice and can
+change button artwork; it does not switch the actual audio stream. A
+language-selection menu is therefore visual/state-only until player actions
+for switching among a title's mapped alternatives are added.
 
 ### Finding track IDs in an MKV
 
@@ -286,12 +277,14 @@ Open the **Export** tab and choose:
 - **Directory package**: writes `mkvdisc.json`, title videos, and referenced
   assets to a folder. This is easiest to inspect and share as a folder.
 - **Embedded Matroska (.mkv)**: combines the title sources into one MKV,
-  maps each title to the correct output video track, and attaches the
-  manifest and image assets.
+  maps each title's video, audio, and subtitle tracks to the output, and
+  attaches the manifest and image assets.
 
 Choose a destination and click **Validate & Export**. The Rust validator
 preflights the v0.2 manifest. Build output is streamed into **Compiler &
-Validation Log**. Wait for the success message before opening the export.
+Validation Log**, and the Export panel shows progress during validation,
+multiplexing or file copying, and finalization. Wait for the success message
+before opening the export.
 Never overwrite an input title source with the output file.
 
 ## 8. Play with the current mpv plugin
@@ -317,8 +310,15 @@ $plugin = Join-Path $repo "target\release\mkvdisc_mpv.dll"
 
 The plugin reads an embedded manifest and its attachments, or the sidecar
 manifest and media in a directory package. In a menu, click a button or use
-the arrow keys and Enter. During title playback, **Ctrl+m** returns to the
-configured menu-return target. The plugin depends on MKVToolNix's
+the arrow keys and Enter. Mouse hit testing scales with the player window and
+accounts for letterboxing; button artwork and background overlays use the
+same video viewport and are repositioned when the player window is resized.
+Moving the pointer over a button updates its focused artwork; clicking selects
+it.
+During title playback, **Ctrl+m** returns to the configured menu-return
+target. For embedded titles, the plugin selects their mapped default
+audio/subtitle tracks; mpv's native track menu may still list tracks from
+other titles. The plugin depends on MKVToolNix's
 `mkvmerge.exe` and `mkvextract.exe` being available.
 
 If PowerShell reports that `mpv` is not recognized, mpv is not on `PATH`;

@@ -121,6 +121,20 @@ class ManifestModelTests(unittest.TestCase):
 
 
 class MultiplexJobTests(unittest.TestCase):
+    def test_mkvmerge_progress_is_reported_separately_from_log_output(self) -> None:
+        job = MultiplexJob(new_project(), "output.mkv", "mkvmerge", MagicMock())
+        progress = []
+        output = []
+        job.progress.connect(progress.append)
+        job.output.connect(output.append)
+
+        job._handle_process_line("#GUI#progress 47")
+        job._handle_process_line("Adding file: feature.mkv")
+        job._handle_process_line("#GUI#progress 130")
+
+        self.assertEqual(progress, [47, 100])
+        self.assertEqual(output, ["Adding file: feature.mkv"])
+
     def test_embedded_manifest_maps_source_track_to_output_track_id(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -148,10 +162,34 @@ class MultiplexJobTests(unittest.TestCase):
             job._build_path = root / "output.mkv"
 
             source_tracks = [
-                {"id": 0, "type": "video", "properties": {"uid": 1234}}
+                {"id": 0, "type": "video", "properties": {"uid": 1234}},
+                {
+                    "id": 1,
+                    "type": "audio",
+                    "properties": {"uid": 1235, "default_track": False},
+                },
+                {
+                    "id": 2,
+                    "type": "audio",
+                    "properties": {"uid": 1236, "default_track": True},
+                },
+                {
+                    "id": 3,
+                    "type": "subtitles",
+                    "properties": {"uid": 1237, "default_track": True},
+                },
+                {
+                    "id": 4,
+                    "type": "subtitles",
+                    "properties": {"uid": 1238, "default_track": False},
+                },
             ]
             output_tracks = [
-                {"id": 2, "type": "video", "properties": {"uid": 1234}}
+                {"id": 2, "type": "video", "properties": {"uid": 1234}},
+                {"id": 4, "type": "audio", "properties": {"uid": 1235}},
+                {"id": 5, "type": "audio", "properties": {"uid": 1236}},
+                {"id": 6, "type": "subtitles", "properties": {"uid": 1237}},
+                {"id": 7, "type": "subtitles", "properties": {"uid": 1238}},
             ]
             job._identify_tracks = MagicMock(
                 side_effect=lambda path: (
@@ -163,6 +201,10 @@ class MultiplexJobTests(unittest.TestCase):
 
             exported = json.loads(job._manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(exported["titles"][0]["video_track_uid"], 2)
+            self.assertEqual(exported["titles"][0]["audio_track_uids"], [5, 4])
+            self.assertEqual(exported["titles"][0]["subtitle_track_uids"], [6, 7])
+            self.assertEqual(exported["titles"][0]["default_audio_track_uid"], 5)
+            self.assertEqual(exported["titles"][0]["default_subtitle_track_uid"], 6)
             self.assertIsNone(exported["titles"][0]["video_track_file"])
             job._validator.validate.assert_called_once()
 
@@ -276,6 +318,7 @@ class AuthoringWindowTests(unittest.TestCase):
         self.application.processEvents()
         self.assertTrue(window.open_project_button.isVisible())
         self.assertTrue(window.delete_button.isVisible())
+        self.assertFalse(window.export_progress.isHidden())
         self.assertEqual(window.titles_table.columnCount(), 7)
         self.assertEqual(window.titles_table.horizontalHeaderItem(3).text(), "Video track ID")
         self.assertEqual(window.export_mode_combo.currentData(), "directory")
@@ -372,12 +415,17 @@ class DirectoryExportTests(unittest.TestCase):
             manifest.menus[0].background.type = "video"
             job = DirectoryExportJob(manifest, str(output), self.validator)
             completed = []
+            progress = []
+            job.progress.connect(progress.append)
             job.completed.connect(lambda success, message: completed.append((success, message)))
             job.start()
             self.assertTrue(job.wait(10_000), "Directory export worker timed out.")
             self.application.processEvents()
             self.assertEqual(len(completed), 1)
             self.assertTrue(completed[0][0], completed[0][1])
+            self.assertTrue(progress)
+            self.assertEqual(progress[0], 0)
+            self.assertTrue(all(a <= b for a, b in zip(progress, progress[1:])))
 
             exported = json.loads((output / "mkvdisc.json").read_text(encoding="utf-8"))
             self.assertTrue((output / "feature.mkv").is_file())

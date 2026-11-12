@@ -40,6 +40,8 @@ type MpvWaitEvent = unsafe extern "C" fn(*mut mpv_handle, f64) -> *mut mpv_event
 type MpvCommand = unsafe extern "C" fn(*mut mpv_handle, *mut *const c_char) -> c_int;
 type MpvSetPropertyString =
     unsafe extern "C" fn(*mut mpv_handle, *const c_char, *const c_char) -> c_int;
+type MpvObserveProperty =
+    unsafe extern "C" fn(*mut mpv_handle, u64, *const c_char, mpv_format) -> c_int;
 type MpvGetProperty =
     unsafe extern "C" fn(*mut mpv_handle, *const c_char, mpv_format, *mut c_void) -> c_int;
 type MpvFree = unsafe extern "C" fn(*mut c_void);
@@ -75,10 +77,28 @@ struct MpvNodeListView {
     keys: *mut *mut c_char,
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum MpvTrackType {
+    Video,
+    Audio,
+    Subtitle,
+}
+
 #[derive(Debug, PartialEq)]
-struct MpvVideoTrack {
+struct MpvTrack {
     id: i64,
     source_id: i64,
+    track_type: MpvTrackType,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct VideoViewport {
+    width: f64,
+    height: f64,
+    margin_left: f64,
+    margin_right: f64,
+    margin_top: f64,
+    margin_bottom: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -86,12 +106,15 @@ struct MpvApi {
     wait_event: MpvWaitEvent,
     command: MpvCommand,
     set_property_string: MpvSetPropertyString,
+    observe_property: MpvObserveProperty,
     get_property: MpvGetProperty,
     free: MpvFree,
     free_node_contents: MpvFreeNodeContents,
 }
 
 static mut MPV_API: Option<MpvApi> = None;
+const OSD_DIMENSIONS_OBSERVER_ID: u64 = 1;
+const MOUSE_POSITION_OBSERVER_ID: u64 = 2;
 
 unsafe fn mpv_api() -> MpvApi {
     MPV_API.expect("mpv host API must be resolved before plugin callbacks run")
@@ -127,6 +150,7 @@ impl MpvApi {
             wait_event: resolve!("mpv_wait_event", MpvWaitEvent),
             command: resolve!("mpv_command", MpvCommand),
             set_property_string: resolve!("mpv_set_property_string", MpvSetPropertyString),
+            observe_property: resolve!("mpv_observe_property", MpvObserveProperty),
             get_property: resolve!("mpv_get_property", MpvGetProperty),
             free: resolve!("mpv_free", MpvFree),
             free_node_contents: resolve!("mpv_free_node_contents", MpvFreeNodeContents),
@@ -155,6 +179,8 @@ pub unsafe extern "C" fn mpv_open_cplugin(ctx: *mut mpv_handle) -> c_int {
     MPV_API = Some(api);
 
     println!("[*] MKV-DISC v0.2 Player Plugin mounted.");
+    observe_osd_dimensions(ctx, api);
+    observe_mouse_position(ctx, api);
 
     loop {
         let event = (api.wait_event)(ctx, -1.0);
@@ -173,16 +199,26 @@ pub unsafe extern "C" fn mpv_open_cplugin(ctx: *mut mpv_handle) -> c_int {
         } else if event_id == MPV_EVENT_END_FILE {
             handle_end_file(ctx);
         } else if event_id == MPV_EVENT_VIDEO_RECONFIG {
-            if !PLAYER_STATE.is_null() {
+            if !PLAYER_STATE.is_null() && (*PLAYER_STATE).in_menu_mode {
                 let state = &mut *PLAYER_STATE;
-                if state.in_menu_mode && !state.menu_rendered_once {
+                if !state.menu_rendered_once {
                     state.menu_rendered_once = true;
                     if !state.menu_background_video_loaded {
                         set_mpv_pause(ctx, true);
                     }
-                    render_active_menu(ctx);
                 }
+                render_active_menu(ctx);
             }
+        } else if event_id == MPV_EVENT_PROPERTY_CHANGE
+            && (*event).reply_userdata == OSD_DIMENSIONS_OBSERVER_ID
+        {
+            if !PLAYER_STATE.is_null() && (*PLAYER_STATE).in_menu_mode {
+                render_active_menu(ctx);
+            }
+        } else if event_id == MPV_EVENT_PROPERTY_CHANGE
+            && (*event).reply_userdata == MOUSE_POSITION_OBSERVER_ID
+        {
+            update_mouse_focus(ctx);
         } else if event_id == MPV_EVENT_CLIENT_MESSAGE {
             let msg = *((*event).data as *mut mpv_event_client_message);
             if msg.num_args > 0 {
@@ -193,6 +229,36 @@ pub unsafe extern "C" fn mpv_open_cplugin(ctx: *mut mpv_handle) -> c_int {
     }
 
     0
+}
+
+unsafe fn observe_osd_dimensions(ctx: *mut mpv_handle, api: MpvApi) {
+    let property = CString::new("osd-dimensions").unwrap();
+    let status = (api.observe_property)(
+        ctx,
+        OSD_DIMENSIONS_OBSERVER_ID,
+        property.as_ptr(),
+        MPV_FORMAT_NODE,
+    );
+    if status < 0 {
+        eprintln!(
+            "[!] Could not observe mpv window dimensions; menu overlays may not track resize (error {status})."
+        );
+    }
+}
+
+unsafe fn observe_mouse_position(ctx: *mut mpv_handle, api: MpvApi) {
+    let property = CString::new("mouse-pos").unwrap();
+    let status = (api.observe_property)(
+        ctx,
+        MOUSE_POSITION_OBSERVER_ID,
+        property.as_ptr(),
+        MPV_FORMAT_NODE,
+    );
+    if status < 0 {
+        eprintln!(
+            "[!] Could not observe mouse movement; menu button hover effects are unavailable (error {status})."
+        );
+    }
 }
 
 unsafe fn on_file_loaded(ctx: *mut mpv_handle) {
@@ -466,15 +532,51 @@ unsafe fn start_title_playback(ctx: *mut mpv_handle, title_uid: &str) {
     set_menu_input_enabled(ctx, false);
     let state = &mut *PLAYER_STATE;
     if let Some(title) = state.manifest.titles.iter().find(|t| t.uid == title_uid) {
-        if let Some(track_id) = title.video_track_uid {
-            set_mpv_video_track(ctx, track_id);
+        if state.manifest.source_mode == "embedded" {
+            set_mpv_title_tracks(ctx, title);
+        } else if let Some(track_id) = title.video_track_uid {
+            set_mpv_track(ctx, b"vid", track_id, MpvTrackType::Video);
         }
         seek_mpv(ctx, title.start_ns as f64 / 1_000_000_000.0);
     }
     set_mpv_pause(ctx, false);
 }
 
-unsafe fn set_mpv_video_track(ctx: *mut mpv_handle, track_id: u32) {
+unsafe fn set_mpv_title_tracks(ctx: *mut mpv_handle, title: &mkvdisc::Title) {
+    if let Some(track_id) = title.video_track_uid {
+        set_mpv_track(ctx, b"vid", track_id, MpvTrackType::Video);
+    }
+
+    if let Some(audio_tracks) = title.audio_track_uids.as_ref() {
+        let audio_track_id = title
+            .default_audio_track_uid
+            .filter(|track_id| audio_tracks.contains(track_id))
+            .or_else(|| audio_tracks.first().copied());
+        if let Some(track_id) = audio_track_id {
+            set_mpv_track(ctx, b"aid", track_id, MpvTrackType::Audio);
+        } else {
+            set_mpv_track_disabled(ctx, b"aid");
+        }
+    }
+
+    if let Some(subtitle_tracks) = title.subtitle_track_uids.as_ref() {
+        if let Some(track_id) = title
+            .default_subtitle_track_uid
+            .filter(|track_id| subtitle_tracks.contains(track_id))
+        {
+            set_mpv_track(ctx, b"sid", track_id, MpvTrackType::Subtitle);
+        } else {
+            set_mpv_track_disabled(ctx, b"sid");
+        }
+    }
+}
+
+unsafe fn set_mpv_track(
+    ctx: *mut mpv_handle,
+    property_name: &[u8],
+    track_id: u32,
+    track_type: MpvTrackType,
+) {
     let api = mpv_api();
     let property = CString::new("track-list").unwrap();
     let mut node: mpv_node = std::mem::zeroed();
@@ -491,29 +593,44 @@ unsafe fn set_mpv_video_track(ctx: *mut mpv_handle, track_id: u32) {
         return;
     }
 
-    let tracks = read_mpv_video_tracks(&node);
+    let tracks = read_mpv_tracks(&node);
     (api.free_node_contents)(&mut node);
-    let mpv_track_id = match find_mpv_video_track_id(track_id, &tracks) {
+    let mpv_track_id = match find_mpv_track_id(track_id, track_type, &tracks) {
         Some(id) => id.to_string(),
         None => {
             eprintln!(
-                "[!] Video track {track_id} was not found uniquely in mpv's track list."
+                "[!] Track {track_id} ({track_type:?}) was not found uniquely in mpv's track list."
             );
+            set_mpv_track_disabled(ctx, property_name);
             return;
         }
     };
-    let property = CString::new("vid").unwrap();
+    let property = CString::new(property_name).unwrap();
     let value = CString::new(mpv_track_id).unwrap();
     let status = (api.set_property_string)(ctx, property.as_ptr(), value.as_ptr());
     if status < 0 {
         eprintln!(
-            "[!] mpv could not select video track {}: error {}",
-            track_id, status
+            "[!] mpv could not select {track_type:?} track {track_id}: error {status}"
         );
     }
 }
 
-unsafe fn read_mpv_video_tracks(node: &mpv_node) -> Vec<MpvVideoTrack> {
+unsafe fn set_mpv_track_disabled(ctx: *mut mpv_handle, property_name: &[u8]) {
+    let property = match CString::new(property_name) {
+        Ok(property) => property,
+        Err(_) => return,
+    };
+    let value = CString::new("no").unwrap();
+    let status = (mpv_api().set_property_string)(ctx, property.as_ptr(), value.as_ptr());
+    if status < 0 {
+        eprintln!(
+            "[!] mpv could not disable track property {}: error {status}",
+            property.to_string_lossy()
+        );
+    }
+}
+
+unsafe fn read_mpv_tracks(node: &mpv_node) -> Vec<MpvTrack> {
     if node.format != MPV_FORMAT_NODE_ARRAY || node.u.list.is_null() {
         return Vec::new();
     }
@@ -529,13 +646,23 @@ unsafe fn read_mpv_video_tracks(node: &mpv_node) -> Vec<MpvVideoTrack> {
         }
         let track_list = (*track_node).u.list;
         let type_node = mpv_map_value(track_list, b"type");
-        if !mpv_node_string_equals(type_node, b"video") {
+        let track_type = if mpv_node_string_equals(type_node, b"video") {
+            MpvTrackType::Video
+        } else if mpv_node_string_equals(type_node, b"audio") {
+            MpvTrackType::Audio
+        } else if mpv_node_string_equals(type_node, b"sub") {
+            MpvTrackType::Subtitle
+        } else {
             continue;
-        }
+        };
         let id = mpv_node_integer(mpv_map_value(track_list, b"id"));
         let source_id = mpv_node_integer(mpv_map_value(track_list, b"src-id"));
         if let (Some(id), Some(source_id)) = (id, source_id) {
-            tracks.push(MpvVideoTrack { id, source_id });
+            tracks.push(MpvTrack {
+                id,
+                source_id,
+                track_type,
+            });
         }
     }
     tracks
@@ -575,11 +702,15 @@ unsafe fn mpv_node_integer(node: Option<*const mpv_node>) -> Option<i64> {
     Some((*node).u.int64)
 }
 
-fn find_mpv_video_track_id(source_track_id: u32, tracks: &[MpvVideoTrack]) -> Option<i64> {
+fn find_mpv_track_id(
+    source_track_id: u32,
+    track_type: MpvTrackType,
+    tracks: &[MpvTrack],
+) -> Option<i64> {
     let source_id = i64::from(source_track_id).checked_add(1)?;
     let mut matching = tracks
         .iter()
-        .filter(|track| track.source_id == source_id)
+        .filter(|track| track.source_id == source_id && track.track_type == track_type)
         .map(|track| track.id);
     let id = matching.next()?;
     if matching.next().is_some() {
@@ -753,7 +884,7 @@ unsafe fn handle_input_command(ctx: *mut mpv_handle, cmd: &str) {
         return;
     }
     if cmd == "mkvdisc-click" {
-        if let Some((x, y)) = get_mouse_position(ctx) {
+        if let Some((x, y)) = mouse_position_on_active_canvas(ctx) {
             let state = &mut *PLAYER_STATE;
             if !state.in_menu_mode {
                 return;
@@ -775,6 +906,7 @@ unsafe fn handle_input_command(ctx: *mut mpv_handle, cmd: &str) {
                 handle_input_command(ctx, "mkvdisc-select");
             }
         }
+
         return;
     }
     let state = &mut *PLAYER_STATE;
@@ -916,6 +1048,54 @@ _ => {}
 _ => {}
 }
 }
+unsafe fn mouse_position_on_active_canvas(ctx: *mut mpv_handle) -> Option<(f64, f64)> {
+    if PLAYER_STATE.is_null() {
+        return None;
+    }
+    let state = &*PLAYER_STATE;
+    let menu = state
+        .manifest
+        .menus
+        .iter()
+        .find(|menu| menu.uid == state.active_menu_uid)?;
+    let (x, y) = get_mouse_position(ctx)?;
+    map_mouse_to_canvas(
+        x,
+        y,
+        f64::from(menu.canvas.width),
+        f64::from(menu.canvas.height),
+        get_video_viewport(ctx)?,
+    )
+}
+
+unsafe fn update_mouse_focus(ctx: *mut mpv_handle) {
+    if PLAYER_STATE.is_null() || !(*PLAYER_STATE).in_menu_mode {
+        return;
+    }
+    let (x, y) = match mouse_position_on_active_canvas(ctx) {
+        Some(position) => position,
+        None => return,
+    };
+    let state = &mut *PLAYER_STATE;
+    let hovered_button_uid = state
+        .manifest
+        .menus
+        .iter()
+        .find(|menu| menu.uid == state.active_menu_uid)
+        .and_then(|menu| {
+            menu.buttons
+                .iter()
+                .find(|button| point_inside_button(x, y, button.rect))
+        })
+        .map(|button| button.uid.clone());
+    if let Some(button_uid) = hovered_button_uid {
+        if state.focused_button_uid != button_uid {
+            state.focused_button_uid = button_uid;
+            render_active_menu(ctx);
+        }
+    }
+}
+
 unsafe fn render_active_menu(ctx: *mut mpv_handle) {
 if PLAYER_STATE.is_null() {
 return;
@@ -932,21 +1112,29 @@ let menu = match state
 Some(m) => m,
 None => return,
 };
+let viewport = match get_video_viewport(ctx) {
+    Some(viewport) => viewport,
+    None => {
+        eprintln!("[!] Cannot render menu overlays without mpv display dimensions.");
+        return;
+    }
+};
 let mut next_overlay_id: u32 = 1;
 if menu.background.bg_type != "video" {
 if let Some(bg_name) = &menu.background.name {
 let bg_path = state.assets_dir.join(bg_name);
-if push_image_overlay(
-ctx,
-state,
-next_overlay_id,
-&bg_path,
-0,
-0,
-menu.canvas.width,
-menu.canvas.height,
+if let Some((x, y, width, height)) = map_canvas_rect_to_viewport(
+    0.0,
+    0.0,
+    f64::from(menu.canvas.width),
+    f64::from(menu.canvas.height),
+    f64::from(menu.canvas.width),
+    f64::from(menu.canvas.height),
+    viewport,
 ) {
+if push_image_overlay(ctx, state, next_overlay_id, &bg_path, x, y, width, height) {
 next_overlay_id += 1;
+}
 }
 }
 }
@@ -967,6 +1155,18 @@ let (x, y, w, h) = btn.rect;
 if w <= 0 || h <= 0 {
 continue;
 }
+let (x, y, w, h) = match map_canvas_rect_to_viewport(
+    f64::from(x),
+    f64::from(y),
+    f64::from(w),
+    f64::from(h),
+    f64::from(menu.canvas.width),
+    f64::from(menu.canvas.height),
+    viewport,
+) {
+    Some(rect) => rect,
+    None => continue,
+};
 let base_asset = if is_focused {
 btn.assets.focused.as_ref().or(btn.assets.idle.as_ref())
 } else {
@@ -998,6 +1198,53 @@ next_overlay_id += 1;
 }
 }
 }
+
+fn map_canvas_rect_to_viewport(
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    canvas_width: f64,
+    canvas_height: f64,
+    viewport: VideoViewport,
+) -> Option<(i32, i32, u32, u32)> {
+    let video_width = viewport.width - viewport.margin_left - viewport.margin_right;
+    let video_height = viewport.height - viewport.margin_top - viewport.margin_bottom;
+    if ![x, y, width, height, canvas_width, canvas_height, video_width, video_height]
+        .iter()
+        .all(|value| value.is_finite())
+        || width <= 0.0
+        || height <= 0.0
+        || canvas_width <= 0.0
+        || canvas_height <= 0.0
+        || video_width <= 0.0
+        || video_height <= 0.0
+    {
+        return None;
+    }
+
+    let left = viewport.margin_left + x * video_width / canvas_width;
+    let top = viewport.margin_top + y * video_height / canvas_height;
+    let scaled_width = width * video_width / canvas_width;
+    let scaled_height = height * video_height / canvas_height;
+    if left < f64::from(i32::MIN)
+        || left > f64::from(i32::MAX)
+        || top < f64::from(i32::MIN)
+        || top > f64::from(i32::MAX)
+        || scaled_width.round() > f64::from(u32::MAX)
+        || scaled_height.round() > f64::from(u32::MAX)
+    {
+        return None;
+    }
+
+    Some((
+        left.round() as i32,
+        top.round() as i32,
+        scaled_width.round().max(1.0) as u32,
+        scaled_height.round().max(1.0) as u32,
+    ))
+}
+
 unsafe fn push_image_overlay(
 ctx: *mut mpv_handle,
 state: &mut PlayerState,
@@ -1169,6 +1416,80 @@ unsafe fn get_mouse_position(ctx: *mut mpv_handle) -> Option<(f64, f64)> {
     position
 }
 
+unsafe fn get_video_viewport(ctx: *mut mpv_handle) -> Option<VideoViewport> {
+    let property = CString::new("osd-dimensions").unwrap();
+    let mut node: mpv_node = std::mem::zeroed();
+    let api = mpv_api();
+    let status = (api.get_property)(
+        ctx,
+        property.as_ptr(),
+        MPV_FORMAT_NODE,
+        &mut node as *mut mpv_node as *mut c_void,
+    );
+    if status < 0 {
+        eprintln!("[!] Could not read mpv display dimensions: error {status}.");
+        return None;
+    }
+
+    let viewport = if node.format == MPV_FORMAT_NODE_MAP && !node.u.list.is_null() {
+        let list = node.u.list;
+        mpv_node_number(mpv_map_value(list, b"w"))
+            .zip(mpv_node_number(mpv_map_value(list, b"h")))
+            .map(|(width, height)| VideoViewport {
+                width,
+                height,
+                margin_left: mpv_node_number(mpv_map_value(list, b"ml")).unwrap_or(0.0),
+                margin_right: mpv_node_number(mpv_map_value(list, b"mr")).unwrap_or(0.0),
+                margin_top: mpv_node_number(mpv_map_value(list, b"mt")).unwrap_or(0.0),
+                margin_bottom: mpv_node_number(mpv_map_value(list, b"mb")).unwrap_or(0.0),
+            })
+    } else {
+        None
+    };
+    (api.free_node_contents)(&mut node);
+    viewport
+}
+
+unsafe fn mpv_node_number(node: Option<*const mpv_node>) -> Option<f64> {
+    let node = node?;
+    if node.is_null() {
+        return None;
+    }
+    match (*node).format {
+        MPV_FORMAT_INT64 => Some((*node).u.int64 as f64),
+        MPV_FORMAT_DOUBLE => Some((*node).u.double_),
+        _ => None,
+    }
+}
+
+fn map_mouse_to_canvas(
+    x: f64,
+    y: f64,
+    canvas_width: f64,
+    canvas_height: f64,
+    viewport: VideoViewport,
+) -> Option<(f64, f64)> {
+    let video_width = viewport.width - viewport.margin_left - viewport.margin_right;
+    let video_height = viewport.height - viewport.margin_top - viewport.margin_bottom;
+    if !x.is_finite()
+        || !y.is_finite()
+        || !canvas_width.is_finite()
+        || !canvas_height.is_finite()
+        || video_width <= 0.0
+        || video_height <= 0.0
+        || x < viewport.margin_left
+        || y < viewport.margin_top
+        || x >= viewport.width - viewport.margin_right
+        || y >= viewport.height - viewport.margin_bottom
+    {
+        return None;
+    }
+    Some((
+        (x - viewport.margin_left) * canvas_width / video_width,
+        (y - viewport.margin_top) * canvas_height / video_height,
+    ))
+}
+
 fn point_inside_button(x: f64, y: f64, rect: (i32, i32, i32, i32)) -> bool {
     let (left, top, width, height) = rect;
     width > 0
@@ -1263,7 +1584,10 @@ unsafe fn set_menu_input_enabled(ctx: *mut mpv_handle, enabled: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{find_mpv_video_track_id, point_inside_button, MpvVideoTrack};
+    use super::{
+        find_mpv_track_id, map_canvas_rect_to_viewport, map_mouse_to_canvas,
+        point_inside_button, MpvTrack, MpvTrackType, VideoViewport,
+    };
 
     #[test]
     fn button_hit_test_uses_half_open_rectangle() {
@@ -1275,23 +1599,76 @@ mod tests {
     }
 
     #[test]
-    fn video_track_mapping_uses_mpvs_type_specific_id() {
+    fn track_mapping_uses_mpvs_type_specific_id_and_stream_kind() {
         let tracks = [
-            MpvVideoTrack {
+            MpvTrack {
                 id: 1,
                 source_id: 1,
+                track_type: MpvTrackType::Video,
             },
-            MpvVideoTrack {
+            MpvTrack {
                 id: 2,
                 source_id: 2,
+                track_type: MpvTrackType::Audio,
             },
-            MpvVideoTrack {
+            MpvTrack {
                 id: 3,
                 source_id: 8,
+                track_type: MpvTrackType::Subtitle,
             },
         ];
-        assert_eq!(find_mpv_video_track_id(7, &tracks), Some(3));
-        assert_eq!(find_mpv_video_track_id(8, &tracks), None);
+        assert_eq!(
+            find_mpv_track_id(7, MpvTrackType::Subtitle, &tracks),
+            Some(3)
+        );
+        assert_eq!(find_mpv_track_id(7, MpvTrackType::Audio, &tracks), None);
+        assert_eq!(find_mpv_track_id(8, MpvTrackType::Subtitle, &tracks), None);
+    }
+
+    #[test]
+    fn mouse_position_scales_to_canvas_and_accounts_for_letterboxing() {
+        let viewport = VideoViewport {
+            width: 800.0,
+            height: 600.0,
+            margin_left: 0.0,
+            margin_right: 0.0,
+            margin_top: 75.0,
+            margin_bottom: 75.0,
+        };
+        assert_eq!(
+            map_mouse_to_canvas(400.0, 300.0, 1920.0, 1080.0, viewport),
+            Some((960.0, 540.0))
+        );
+        assert_eq!(
+            map_mouse_to_canvas(400.0, 74.0, 1920.0, 1080.0, viewport),
+            None
+        );
+        assert_eq!(
+            map_mouse_to_canvas(799.0, 524.0, 1920.0, 1080.0, viewport),
+            Some((1917.6, 1077.6))
+        );
+    }
+
+    #[test]
+    fn overlay_rectangles_scale_and_offset_with_the_video_viewport() {
+        let viewport = VideoViewport {
+            width: 800.0,
+            height: 600.0,
+            margin_left: 0.0,
+            margin_right: 0.0,
+            margin_top: 75.0,
+            margin_bottom: 75.0,
+        };
+        assert_eq!(
+            map_canvas_rect_to_viewport(0.0, 0.0, 1920.0, 1080.0, 1920.0, 1080.0, viewport),
+            Some((0, 75, 800, 450))
+        );
+        assert_eq!(
+            map_canvas_rect_to_viewport(
+                480.0, 270.0, 480.0, 108.0, 1920.0, 1080.0, viewport
+            ),
+            Some((200, 188, 200, 45))
+        );
     }
 }
 unsafe fn cleanup_state() {

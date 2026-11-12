@@ -15,27 +15,29 @@ used by `first_play`, actions, navigation, and title return links.
 | `initial_state_variables` | Initial string-to-string reactive state map. |
 | `titles` | Playable video entries, their trim bounds, track IDs, and menu return targets. |
 | `menus` | Menu pages containing canvas, background, and buttons. |
-| `default_audio_uid`, `default_subtitle_uid` | Optional Matroska track identifiers. |
+| `default_audio_uid`, `default_subtitle_uid` | Optional root-level identifiers; not used for per-title track selection. |
 
-## What track and state fields do today
+## Track and state behavior
 
-The embedded exporter multiplexes the source files' tracks into the output
-MKV. The mpv runtime currently maps/selects only each title's video stream
-using `video_track_uid`. It does not record or select the corresponding
-per-title audio/subtitle streams. Consequently, embedded playback with
-multiple title sources may use mpv's normal track-selection behavior instead
-of each title's original audio/subtitle.
+For embedded exports, the authoring app maps each title source's video, audio,
+and subtitle tracks to the corresponding track IDs in the output MKV. The mpv
+plugin selects that title's default audio track (or its first audio track if
+none is marked default), and its default subtitle track if one is marked.
+`audio_track_uids` and `subtitle_track_uids` contain the mapped output IDs;
+`default_audio_track_uid` and `default_subtitle_track_uid` identify the
+per-title default selections. Authors normally do not edit these generated
+fields.
 
-The manifest has `audio_track_uids`, `subtitle_track_uids`,
-`default_audio_uid`, and `default_subtitle_uid` fields, but the current
-authoring UI/runtime does not implement per-title audio/subtitle mapping or
-language switching. Authors do not need to fill these fields in.
+The plugin cannot filter mpv's native track list. Its track menu may still
+show streams from other titles, even though playback selects the active
+title's default streams. Per-title audio/subtitle switching from MKV-DISC
+buttons is not implemented. Directory playback uses the normal track
+selection of the individual title file.
 
 Track IDs are local to their source file and track type. A video ID of `1`
 does not imply that audio ID `1` belongs to it; IDs cannot be paired by
-matching their numbers. Correct embedded support requires explicit source to
-output mappings for each title and player-side selection of those mapped
-tracks.
+matching their numbers. The embedded exporter matches source and output tracks
+using their Matroska track UIDs.
 
 `initial_state_variables` and a button's `set_var_key` / `set_var_value` are
 menu logic, not Matroska track references. For example,
@@ -52,6 +54,10 @@ chosen by the author and compared as exact strings for active artwork.
   "name": "Feature film",
   "video_track_uid": 0,
   "video_track_file": "feature.mkv",
+  "audio_track_uids": [2, 3],
+  "subtitle_track_uids": [4],
+  "default_audio_track_uid": 2,
+  "default_subtitle_track_uid": 4,
   "start_ns": 0,
   "end_ns": 5400000000000,
   "menu_return": "menu-main"
@@ -61,8 +67,9 @@ chosen by the author and compared as exact strings for active artwork.
 `video_track_uid` is the `mkvmerge` video track ID. `video_track_file` points
 to the source file in a project and directory export. An embedded export
 rewrites the manifest with the corresponding output-container track ID and
-omits the workstation source path. Bounds are nanoseconds. `menu_return` is a
-menu UID.
+omits the workstation source path. It similarly rewrites the per-title audio
+and subtitle ID arrays and default IDs to output-container track IDs. Bounds
+are nanoseconds. `menu_return` is a menu UID.
 
 The video track ID is local to the source MKV before export. Use MKVToolNix
 GUI's track list to distinguish a video track from audio and subtitle tracks.
