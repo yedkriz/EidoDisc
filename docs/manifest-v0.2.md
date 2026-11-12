@@ -19,11 +19,23 @@ used by `first_play`, actions, navigation, and title return links.
 
 ## What track and state fields do today
 
-The mpv runtime currently uses `video_track_uid` to choose a title's video
-stream. The manifest also has `audio_track_uids`, `subtitle_track_uids`,
+The embedded exporter multiplexes the source files' tracks into the output
+MKV. The mpv runtime currently maps/selects only each title's video stream
+using `video_track_uid`. It does not record or select the corresponding
+per-title audio/subtitle streams. Consequently, embedded playback with
+multiple title sources may use mpv's normal track-selection behavior instead
+of each title's original audio/subtitle.
+
+The manifest has `audio_track_uids`, `subtitle_track_uids`,
 `default_audio_uid`, and `default_subtitle_uid` fields, but the current
-authoring UI/runtime does not use them to change audio or subtitle playback.
-They are reserved schema fields, not working language-switch controls yet.
+authoring UI/runtime does not implement per-title audio/subtitle mapping or
+language switching. Authors do not need to fill these fields in.
+
+Track IDs are local to their source file and track type. A video ID of `1`
+does not imply that audio ID `1` belongs to it; IDs cannot be paired by
+matching their numbers. Correct embedded support requires explicit source to
+output mappings for each title and player-side selection of those mapped
+tracks.
 
 `initial_state_variables` and a button's `set_var_key` / `set_var_value` are
 menu logic, not Matroska track references. For example,

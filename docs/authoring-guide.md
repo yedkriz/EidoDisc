@@ -71,15 +71,36 @@ runtime opens the selected title file.
 Audio and subtitle tracks are streams inside the title's MKV, separate from
 its video track. At present, the authoring app and mpv plugin do **not**
 provide a menu action that switches the playing title's audio or subtitle
-stream. The manifest schema has fields reserved for audio/subtitle track IDs,
-but entering a state value such as `audio_lang = en` only remembers a menu
-choice and can change button artwork; it does not select an audio stream.
+stream. Embedded export multiplexes the tracks from its source files into the
+output, but the runtime only maps/selects the title's video track. It does not
+map that title to its corresponding audio or subtitle tracks.
+
+You do **not** need to fill in `audio_track_uids`, `subtitle_track_uids`,
+`default_audio_uid`, or `default_subtitle_uid`; the current authoring app
+doesn't expose these as working per-title playback mappings. In particular,
+do not assume that video track ID 1 should use audio track ID 1, or that
+video track ID 0 should use audio track ID 0. IDs are local to each source
+file and each track type, and they do not express which audio belongs to
+which video.
+
+As a result, when an embedded file contains multiple title sources, the
+runtime cannot currently guarantee that each title plays its own original
+audio or subtitle stream. mpv uses its normal track-selection behavior for
+the combined file. A state value such as `audio_lang = en` only remembers a
+menu choice and can change button artwork; it does not select an audio stream.
 Likewise, a `subtitle_lang` variable does not turn subtitles on or off.
 
 You can still author and preview language-selection screens as navigation and
-visual design, or use separate title videos that already contain the desired
-mix. Do not promise users that such buttons change audio/subtitle playback
-until runtime track-switching support is added.
+visual design, but they are visual/state-only today. For reliable audio in a
+directory package, keep each title in its own source MKV with its intended
+default audio/subtitle tracks set in MKVToolNix. This is not a workaround for
+per-title track selection in an embedded file.
+
+Proper embedded support will need to record the mapping for each title from
+source audio/subtitle track IDs to output-container track IDs, then have the
+player select those mapped tracks when starting that title. A real language
+selection menu will additionally need playback actions that switch among the
+mapped audio/subtitle alternatives; reactive state alone is not enough.
 
 ### Finding track IDs in an MKV
 
