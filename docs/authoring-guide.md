@@ -135,12 +135,20 @@ Never overwrite an input title source with the output file.
 Build the plugin from the repository root and pass it to mpv:
 
 ```powershell
+$repo = (git rev-parse --show-toplevel).Trim()
 cargo build --release -p mkvdisc-mpv
 $mpv = (Get-Command mpv.exe -ErrorAction SilentlyContinue).Source
 if (-not $mpv) {
-    $mpv = Read-Host "Enter the full path to mpv.exe"
+    $mpv = Read-Host "Enter the path to mpv.exe (or its containing folder)"
 }
-& $mpv --script="target\release\mkvdisc_mpv.dll" "path\to\disc.mkv"
+if (Test-Path -LiteralPath $mpv -PathType Container) {
+    $mpv = Join-Path $mpv "mpv.exe"
+}
+if (-not (Test-Path -LiteralPath $mpv -PathType Leaf)) {
+    throw "mpv.exe not found at '$mpv'. Enter the executable path or its folder."
+}
+$plugin = Join-Path $repo "target\release\mkvdisc_mpv.dll"
+& $mpv --script="$plugin" "path\to\disc.mkv"
 ```
 
 The plugin reads an embedded manifest and its attachments, or the sidecar
@@ -150,8 +158,10 @@ configured menu-return target. The plugin depends on MKVToolNix's
 `mkvmerge.exe` and `mkvextract.exe` being available.
 
 If PowerShell reports that `mpv` is not recognized, mpv is not on `PATH`;
-enter the full path to `mpv.exe` when prompted. Use only one `--script`
-option and replace the example media path with the exported MKV's actual path.
+enter the full path to `mpv.exe` or its containing folder when prompted. The
+command finds the repository root, so it also works from subfolders. Use only
+one `--script` option and replace the example media path with the exported
+MKV's actual path.
 
 To load the plugin automatically on each mpv launch, add a script entry in
 mpv's `mpv.conf`:

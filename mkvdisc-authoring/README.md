@@ -56,17 +56,27 @@ Build the native mpv plugin from the workspace root and load it with the
 exported Matroska:
 
 ```powershell
+$repo = (git rev-parse --show-toplevel).Trim()
 cargo build --release -p mkvdisc-mpv
 $mpv = (Get-Command mpv.exe -ErrorAction SilentlyContinue).Source
 if (-not $mpv) {
-    $mpv = Read-Host "Enter the full path to mpv.exe"
+    $mpv = Read-Host "Enter the path to mpv.exe (or its containing folder)"
 }
-& $mpv --script="target\release\mkvdisc_mpv.dll" "path\to\disc.mkv"
+if (Test-Path -LiteralPath $mpv -PathType Container) {
+    $mpv = Join-Path $mpv "mpv.exe"
+}
+if (-not (Test-Path -LiteralPath $mpv -PathType Leaf)) {
+    throw "mpv.exe not found at '$mpv'. Enter the executable path or its folder."
+}
+$plugin = Join-Path $repo "target\release\mkvdisc_mpv.dll"
+& $mpv --script="$plugin" "path\to\disc.mkv"
 ```
 
 If PowerShell says `mpv` is not recognized, enter the full path to `mpv.exe`
-when prompted. Use just one `--script` option and replace the example media
-path with the exported MKV's path.
+or its containing folder when prompted. The command finds the repository root,
+so it also works when run from a subfolder such as `out-test`. Use only one
+`--script` option and replace the example media path with the exported MKV's
+path.
 
 The plugin reads the embedded manifest and attachments, then starts the
 `first_play` menu. Its C-plugin entry point must remain active until mpv shuts

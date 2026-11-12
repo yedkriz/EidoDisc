@@ -76,21 +76,30 @@ python mkvdisc-authoring/main.py
 Build the plugin and load it with the export:
 
 ```powershell
+$repo = (git rev-parse --show-toplevel).Trim()
 cargo build --release -p mkvdisc-mpv
 $mpv = (Get-Command mpv.exe -ErrorAction SilentlyContinue).Source
 if (-not $mpv) {
-    $mpv = Read-Host "Enter the full path to mpv.exe"
+    $mpv = Read-Host "Enter the path to mpv.exe (or its containing folder)"
 }
-& $mpv --script="target\release\mkvdisc_mpv.dll" "path\to\disc.mkv"
+if (Test-Path -LiteralPath $mpv -PathType Container) {
+    $mpv = Join-Path $mpv "mpv.exe"
+}
+if (-not (Test-Path -LiteralPath $mpv -PathType Leaf)) {
+    throw "mpv.exe not found at '$mpv'. Enter the executable path or its folder."
+}
+$plugin = Join-Path $repo "target\release\mkvdisc_mpv.dll"
+& $mpv --script="$plugin" "path\to\disc.mkv"
 ```
 
 An mpv C plugin is not an ordinary media codec plugin: mpv loads it through
 its script-loading option. To avoid supplying the option for every launch,
 users can configure mpv to load the DLL by default. See the mpv section of the
 [authoring guide](docs/authoring-guide.md). If PowerShell says `mpv` is not
-recognized, mpv is not on `PATH`; enter the full path to `mpv.exe` at the
-prompt. Keep only one `--script` option and replace the example media path
-with the exported MKV's path.
+recognized, mpv is not on `PATH`; enter the full path to `mpv.exe` or its
+containing folder at the prompt. Run the command from inside the Git
+repository, keep only one `--script` option, and replace the example media
+path with the exported MKV's path.
 
 ## License
 
